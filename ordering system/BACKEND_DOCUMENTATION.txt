@@ -1,0 +1,939 @@
+================================================================================
+                        ORDERING SYSTEM - BACKEND DOCUMENTATION
+                                  April 22, 2026
+================================================================================
+
+TABLE OF CONTENTS
+================================================================================
+1. System Overview
+2. Database Schema
+3. File Structure & Purposes
+4. Authentication System
+5. API Endpoints
+6. Dashboard Logic
+7. Security Features
+8. Data Flow Examples
+9. Configuration
+
+
+1. SYSTEM OVERVIEW
+================================================================================
+
+The Ordering System Backend is built with:
+- Language: PHP 8.2.12
+- Database: MySQL 5.7+
+- Server: Apache 2.4.58
+- Authentication: Session-based with BCrypt hashing
+- Architecture: MVC-style with role-based access control
+
+Three User Types:
+- CUSTOMER: Browse products, shop, track loyalty points
+- PRODUCER: Manage products, stock, and view orders
+- ADMIN: Approve/manage producers, system oversight
+
+
+2. DATABASE SCHEMA
+================================================================================
+
+TABLE: products
+- id (INT, Primary Key, Auto Increment)
+- name (VARCHAR 100)
+- price (DECIMAL 10,2)
+- image (VARCHAR 255)
+- stock (INT, default: 100)
+- producer_id (INT, Foreign Key)
+
+TABLE: orders
+- id (INT, Primary Key, Auto Increment)
+- created_at (TIMESTAMP, default: CURRENT_TIMESTAMP)
+
+TABLE: order_items
+- id (INT, Primary Key, Auto Increment)
+- order_id (INT, Foreign Key)
+- product_id (INT, Foreign Key)
+- quantity (INT)
+
+TABLE: users (Customers)
+- id (INT, Primary Key, Auto Increment)
+- full_name (VARCHAR 100)
+- email (VARCHAR 100, UNIQUE)
+- password (VARCHAR 255, BCrypt hashed)
+- loyalty_points (INT, default: 0)
+- created_at (TIMESTAMP)
+
+TABLE: producers
+- id (INT, Primary Key, Auto Increment)
+- full_name (VARCHAR 100)
+- email (VARCHAR 100, UNIQUE)
+- password (VARCHAR 255, BCrypt hashed)
+- company_name (VARCHAR 100)
+- status (ENUM: active, inactive, suspended)
+- created_at (TIMESTAMP)
+
+TABLE: admins
+- id (INT, Primary Key, Auto Increment)
+- full_name (VARCHAR 100)
+- email (VARCHAR 100, UNIQUE)
+- password (VARCHAR 255, BCrypt hashed)
+- created_at (TIMESTAMP)
+
+TABLE: loyalty_transactions
+- id (INT, Primary Key, Auto Increment)
+- user_id (INT, Foreign Key)
+- points (INT)
+- description (VARCHAR 255)
+- created_at (TIMESTAMP)
+
+
+3. FILE STRUCTURE & PURPOSES
+================================================================================
+
+DATABASE & CONFIG
+-----------------
+db_config.php
+  Purpose: Database connection and initialization
+  Features:
+    - Auto-creates database if missing
+    - Validates all 7 required tables exist
+    - Redirects to db_init.php if tables missing
+    - Sets UTF-8 charset
+  Key Code:
+    $conn = new mysqli(DB_HOST, DB_USER, DB_PASS);
+    $conn->select_db(DB_NAME);
+    $conn->set_charset("utf8mb4");
+
+db_init.php
+  Purpose: Database initialization and schema creation
+  Features:
+    - Creates database if not exists
+    - Creates all 7 tables with proper schema
+    - Adds missing columns via ALTER TABLE
+    - Inserts demo data (3 demo users)
+    - Provides visual feedback with checkmarks
+  Tables Created:
+    products, orders, order_items, users, producers, admins, loyalty_transactions
+  Demo Data:
+    Customer: customer@store.com / password (500 loyalty points)
+    Producer: producer@store.com / password (company: TechCorp Supplies)
+    Admin: admin@store.com / admin123
+
+
+AUTHENTICATION SYSTEM
+---------------------
+auth/session.php
+  Purpose: Session management and role-based access control
+  Key Functions:
+    - isLoggedIn(): Returns true if any user type is logged in
+    - isCustomer(): Returns true if logged in as customer
+    - isProducer(): Returns true if logged in as producer
+    - isAdmin(): Returns true if logged in as admin
+    - requireLogin(): Redirects to login if not authenticated
+    - requireCustomer(): Restricts to customers only
+    - requireProducer(): Restricts to producers only
+    - requireAdmin(): Restricts to admins only
+    - loginCustomer($userId, $email): Creates customer session
+    - loginProducer($producerId, $email, $companyName): Creates producer session
+    - loginAdmin($adminId, $email): Creates admin session
+    - logout(): Destroys session and redirects
+  Session Variables:
+    Customer: $_SESSION['user_id'], $_SESSION['user_email'], $_SESSION['user_type']
+    Producer: $_SESSION['producer_id'], $_SESSION['producer_email'], $_SESSION['company_name']
+    Admin: $_SESSION['admin_id'], $_SESSION['admin_email']
+
+auth/login.php
+  Purpose: User authentication and login
+  Features:
+    - Three authentication tabs (Customer/Producer/Admin)
+    - Validates email and password
+    - Uses password_verify() for BCrypt validation
+    - Checks producer status (must be active)
+    - Creates session on successful login
+    - Displays demo credentials to users
+  Authentication Flow:
+    1. User selects user type
+    2. Enters email and password
+    3. System queries appropriate table (users, producers, or admins)
+    4. Verifies password with password_verify()
+    5. For producers: checks if status == 'active'
+    6. Creates session and redirects to dashboard.php
+  Code Example:
+    $stmt = $conn->prepare("SELECT id, full_name, email, password FROM users WHERE email = ?");
+    $stmt->bind_param("s", $email);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    if (password_verify($password, $user['password'])) {
+        loginCustomer($user['id'], $user['email']);
+        header('Location: ../dashboards/dashboard.php');
+    }
+
+auth/register.php
+  Purpose: User registration (customers and producers)
+  Features:
+    - Separate registration flows for customers and producers
+    - Email validation (FILTER_VALIDATE_EMAIL)
+    - Password strength checking (min 6 characters)
+    - Password confirmation matching
+    - BCrypt password hashing
+    - Duplicate email detection
+    - Producers start as "inactive" (need admin approval)
+  Validation:
+    - All required fields filled
+    - Valid email format
+    - Password at least 6 characters
+    - Passwords match
+    - Email not already registered
+  Code Example:
+    $hashedPassword = password_hash($password, PASSWORD_BCRYPT);
+    $stmt = $conn->prepare("INSERT INTO users (full_name, email, password) VALUES (?, ?, ?)");
+    $stmt->bind_param("sss", $fullName, $email, $hashedPassword);
+    if ($stmt->execute()) {
+        $success = 'Account created successfully!';
+    }
+
+auth/logout.php
+  Purpose: Session termination
+  Features:
+    - Destroys session
+    - Redirects to login.php
+  Code:
+    session_destroy();
+    header('Location: login.php');
+
+
+DASHBOARD SYSTEM
+----------------
+dashboards/dashboard.php
+  Purpose: Router - directs users to appropriate dashboard
+  Logic:
+    - Checks user type from session
+    - Redirects customer to customer_dashboard.php
+    - Redirects producer to producer_dashboard.php
+    - Redirects admin to admin_dashboard.php
+
+dashboards/customer_dashboard.php
+  Purpose: Customer profile and loyalty rewards dashboard
+  Backend Logic:
+    - Requires customer login (requireCustomer())
+    - Fetches user profile (full_name, email, loyalty_points)
+    - Fetches last 10 loyalty transactions
+    - Calculates loyalty progress (1000 points = 1 reward)
+    - Calculates rewards earned
+    - Calculates points to next reward
+  Key SQL Queries:
+    SELECT full_name, email, loyalty_points FROM users WHERE id = ?
+    SELECT points, description, created_at FROM loyalty_transactions 
+      WHERE user_id = ? ORDER BY created_at DESC LIMIT 10
+  Calculations:
+    pointsForReward = 1000
+    loyaltyPercentage = (loyalty_points % 1000) / 1000 * 100
+    rewardsEarned = INT(loyalty_points / 1000)
+  Features:
+    - Profile information display
+    - Loyalty points counter
+    - Progress bar visualization
+    - Transaction history table
+    - Quick links to products and cart
+
+dashboards/producer_dashboard.php
+  Purpose: Producer product and order management
+  Backend Logic:
+    - Requires producer login (requireProducer())
+    - Fetches producer company information
+    - Handles product updates (UPDATE products)
+    - Fetches producer's products only (WHERE producer_id = ?)
+    - Fetches orders for producer's products
+  Three Management Tabs:
+    1. PRODUCTS TAB
+       - Lists all products by this producer
+       - Display: name, price, stock, edit button
+       - Allows editing: name, price, stock
+       - Uses modal dialog for editing
+       - Updates via POST (UPDATE products)
+       - Row-level security: only own products shown
+    
+    2. STOCK TAB
+       - Shows current inventory levels
+       - Color-coded status:
+         * Red: Low stock (≤10 units)
+         * Yellow: Medium (≤25 units)
+         * Green: Healthy (>25 units)
+       - Adjust stock button (same edit modal)
+    
+    3. ORDERS TAB
+       - Shows recent orders (last 20)
+       - Display: Order ID, product name, quantity, price, date
+       - Row-level security: only orders for own products
+  Key SQL Queries:
+    UPDATE products SET name = ?, price = ?, stock = ? 
+      WHERE id = ? AND producer_id = ?
+    
+    SELECT id, name, price, stock, image FROM products 
+      WHERE producer_id = ? ORDER BY name
+    
+    SELECT o.id, o.created_at, oi.product_id, oi.quantity, p.name, p.price
+      FROM order_items oi
+      JOIN orders o ON o.id = oi.order_id
+      JOIN products p ON p.id = oi.product_id
+      WHERE p.producer_id = ?
+      ORDER BY o.created_at DESC LIMIT 20
+
+dashboards/admin_dashboard.php
+  Purpose: Admin producer management
+  Backend Logic:
+    - Requires admin login (requireAdmin())
+    - Handles producer status updates (UPDATE producers)
+    - Validates status values (active, inactive, suspended)
+    - Fetches all producers with details
+  Key SQL Queries:
+    UPDATE producers SET status = ? WHERE id = ?
+    SELECT id, full_name, email, company_name, status, created_at 
+      FROM producers ORDER BY created_at DESC
+  Features:
+    - Producer statistics cards (total, active, pending)
+    - Grid of producer cards
+    - Status badges (color-coded)
+    - Action buttons:
+      * Approve (activate pending)
+      * Deactivate (pause access)
+      * Suspend (revoke access)
+    - Producer information displayed:
+      * Company name
+      * Manager name
+      * Email
+      * Registration date
+      * Current status
+
+
+API LAYER
+---------
+api/checkout.php
+  Purpose: REST API endpoint for order processing
+  Method: POST
+  Input Format: JSON
+    {
+      "cart": [
+        {"id": 1, "name": "Product", "price": 99.99, "quantity": 1},
+        ...
+      ]
+    }
+  Output Format: JSON
+    Success:
+      {
+        "success": true,
+        "message": "Order placed successfully",
+        "order_id": 123
+      }
+    Error:
+      {
+        "success": false,
+        "message": "Error description"
+      }
+  Features:
+    - Validates cart data
+    - Uses database transactions for data integrity
+    - Creates order header (INSERT INTO orders)
+    - Adds each item to order_items (INSERT INTO order_items)
+    - Automatic rollback on error
+    - Returns JSON response with HTTP status codes
+  Key Code:
+    $conn->begin_transaction();
+    
+    $sql = "INSERT INTO orders (created_at) VALUES (NOW())";
+    $conn->query($sql);
+    $order_id = $conn->insert_id;
+    
+    $stmt = $conn->prepare("INSERT INTO order_items (order_id, product_id, quantity) VALUES (?, ?, ?)");
+    foreach ($cart as $item) {
+        $product_id = intval($item['id']);
+        $quantity = intval($item['quantity']);
+        $stmt->bind_param("iii", $order_id, $product_id, $quantity);
+        $stmt->execute();
+    }
+    
+    $conn->commit();
+  Error Handling:
+    - Try-catch blocks catch exceptions
+    - Rollback on error: $conn->rollback()
+    - Returns JSON error response
+    - HTTP 400 status on error, 200 on success
+
+
+MAIN PAGES
+----------
+index.php
+  Purpose: Product catalog homepage
+  Backend Logic:
+    - Includes db_config.php and session.php
+    - Fetches all products from database
+    - Checks user authentication status
+    - Shows role-based navigation
+  Key SQL:
+    SELECT * FROM products
+  Features:
+    - Product grid display
+    - Shopping functionality (Add to Cart buttons)
+    - Navigation menu with login/register links
+    - User-specific navigation:
+      * Customers: see Profile and Logout
+      * Producers: see Producer Dashboard and Logout
+      * Admins: see Admin Dashboard and Logout
+      * Guests: see Login and Register
+
+cart.php
+  Purpose: Shopping cart interface
+  Backend Logic:
+    - Includes session.php for user context
+    - Server-side container (client-side cart logic in localStorage)
+    - Shows role-based navigation
+    - Displays Proceed to Checkout button
+  Features:
+    - Cart items display (client-side rendered)
+    - Subtotal calculation
+    - Tax calculation (10%)
+    - Total price display
+    - Quantity adjustment controls
+    - Remove item buttons
+    - Clear cart functionality
+    - Checkout button (calls api/checkout.php)
+
+
+4. AUTHENTICATION SYSTEM
+================================================================================
+
+Login Flow:
+-----------
+1. User visits auth/login.php
+2. User selects user type (Customer/Producer/Admin)
+3. User enters email and password
+4. System validates:
+   - Email/password not empty
+   - Email matches database record
+   - Password matches BCrypt hash
+   - For producers: account status must be "active"
+5. On success: Session created with user ID and type
+6. Redirects to dashboards/dashboard.php
+7. dashboard.php routes to appropriate dashboard
+
+Session Variables:
+------------------
+Customer Session:
+  $_SESSION['user_id']     - User ID (INT)
+  $_SESSION['user_email']  - User email (STRING)
+  $_SESSION['user_type']   - "customer" (STRING)
+
+Producer Session:
+  $_SESSION['producer_id']   - Producer ID (INT)
+  $_SESSION['producer_email'] - Producer email (STRING)
+  $_SESSION['company_name']  - Company name (STRING)
+  $_SESSION['user_type']     - "producer" (STRING)
+
+Admin Session:
+  $_SESSION['admin_id']   - Admin ID (INT)
+  $_SESSION['admin_email'] - Admin email (STRING)
+  $_SESSION['user_type']   - "admin" (STRING)
+
+Registration Flow:
+------------------
+Customer Registration:
+1. User fills form: Full Name, Email, Password, Confirm Password
+2. System validates:
+   - All fields filled
+   - Valid email format
+   - Password at least 6 characters
+   - Passwords match
+   - Email not already registered
+3. On success: Account immediately active
+4. User can login immediately
+
+Producer Registration:
+1. User fills form: Full Name, Email, Company Name, Password, Confirm Password
+2. System validates (same as customer)
+3. Account created with status = "inactive"
+4. Admin must approve before producer can login
+5. Awaiting admin approval message displayed
+
+Password Security:
+------------------
+- Hashing: BCrypt (PASSWORD_BCRYPT)
+- Hashing Function: password_hash($password, PASSWORD_BCRYPT)
+- Verification: password_verify($password, $hash)
+- Password Requirements: Minimum 6 characters
+- Stored: Never in plain text, always hashed
+
+
+5. API ENDPOINTS
+================================================================================
+
+Checkout Endpoint
+-----------------
+URL: /api/checkout.php
+Method: POST
+Content-Type: application/json
+
+Request Example:
+POST /api/checkout.php HTTP/1.1
+Content-Type: application/json
+
+{
+  "cart": [
+    {
+      "id": 1,
+      "name": "Laptop",
+      "price": 999.99,
+      "quantity": 1
+    },
+    {
+      "id": 2,
+      "name": "Mouse",
+      "price": 29.99,
+      "quantity": 2
+    }
+  ]
+}
+
+Response - Success (HTTP 200):
+{
+  "success": true,
+  "message": "Order placed successfully",
+  "order_id": 42
+}
+
+Response - Error (HTTP 400):
+{
+  "success": false,
+  "message": "Cart is empty"
+}
+
+Validation:
+- Cart must not be empty
+- Each item must have id and quantity
+- Both values must be integers
+- Quantity must be > 0
+
+Database Operations:
+1. START TRANSACTION
+2. INSERT INTO orders (created_at VALUES NOW()) -> get order_id
+3. FOR EACH item IN cart:
+     INSERT INTO order_items (order_id, product_id, quantity)
+4. COMMIT TRANSACTION
+5. ON ERROR: ROLLBACK (undo all inserts)
+
+Called By:
+- JavaScript fetch() in js/cart.js (checkout() function)
+- When user clicks "Proceed to Checkout" button
+
+
+6. DASHBOARD LOGIC
+================================================================================
+
+Customer Dashboard:
+------------------
+URL: dashboards/customer_dashboard.php
+Access: Logged-in customers only
+Requires: session.php (requireCustomer() check)
+
+Data Fetched:
+- User profile: full_name, email, loyalty_points
+- Last 10 loyalty transactions: points, description, created_at
+- Calculations:
+  * Total loyalty points
+  * Rewards earned (points / 1000)
+  * Points to next reward (1000 - (points % 1000))
+  * Progress percentage ((points % 1000) / 1000 * 100)
+
+Displayed Information:
+- Profile card: Name, Email, Total Points
+- Loyalty display:
+  * Total points (big number)
+  * Rewards earned (big number)
+  * Points to next reward (big number)
+- Progress bar: Visual representation of progress to next reward
+- Transaction table: Recent loyalty point changes
+- Quick links: Browse Products, View Cart
+
+Producer Dashboard:
+-------------------
+URL: dashboards/producer_dashboard.php
+Access: Logged-in producers only
+Requires: session.php (requireProducer() check)
+
+Data Fetched:
+- Producer info: full_name, email, company_name
+- Products: id, name, price, stock (WHERE producer_id = current_producer_id)
+- Orders: Order ID, Date, Product Name, Quantity, Price
+
+Tabs:
+1. Products Tab
+   - Lists all products by this producer
+   - Shows: Name, Price, Stock
+   - Edit button opens modal
+   - Update submitted via POST to update products
+   
+2. Stock Tab
+   - Shows inventory levels
+   - Status indicators:
+     * Low Stock (red): stock <= 10
+     * Medium (yellow): 10 < stock <= 25
+     * Healthy (green): stock > 25
+   - Adjust button to change stock
+   
+3. Orders Tab
+   - Recent orders for products (last 20)
+   - Shows: Order ID, Product, Quantity, Price, Date
+   - Read-only display
+
+Admin Dashboard:
+----------------
+URL: dashboards/admin_dashboard.php
+Access: Logged-in admins only
+Requires: session.php (requireAdmin() check)
+
+Data Fetched:
+- All producers: id, full_name, email, company_name, status, created_at
+- Statistics:
+  * Total producer count
+  * Active producer count
+  * Pending approval count (status = 'inactive')
+
+Display:
+- Statistics cards showing counts
+- Producer grid with cards for each producer
+- Card info: Company name, Manager, Email, Registration date, Status
+- Status badges: Color-coded (Green=active, Yellow=inactive, Red=suspended)
+- Action buttons:
+  * Approve (if not active)
+  * Deactivate (if not inactive)
+  * Suspend (if not suspended)
+
+Status Updates:
+- Admin submits form with producer_id and new status
+- System validates status in array ['active', 'inactive', 'suspended']
+- Database updated: UPDATE producers SET status = ? WHERE id = ?
+- Success message displayed
+- Page refreshes to show new status
+
+
+7. SECURITY FEATURES
+================================================================================
+
+Authentication Security:
+- BCrypt password hashing (industry standard)
+- password_verify() for secure comparison
+- Session-based authentication
+- Session start check to prevent multiple sessions
+- Automatic logout on inactivity (can be configured)
+
+Authorization Security:
+- Role-based access control (RBAC)
+- Protected endpoints with require*() functions
+- Automatic redirect to login if unauthorized
+- Session variable validation before allowing access
+
+Database Security:
+- Prepared statements with bound parameters
+- Parameterized queries prevent SQL injection
+- Example:
+  $stmt = $conn->prepare("SELECT * FROM users WHERE id = ?");
+  $stmt->bind_param("i", $id);  // "i" = integer
+  $stmt->execute();
+- UNIQUE constraints on emails (prevent duplicates)
+- Foreign key constraints (referential integrity)
+
+Input Validation:
+- Email validation: filter_var($email, FILTER_VALIDATE_EMAIL)
+- Password strength: minimum 6 characters
+- Password confirmation: matches before saving
+- Trim input: trim($_POST['field'])
+- Type casting: intval(), floatval() for numbers
+- HTML escaping: htmlspecialchars() in display
+
+Data Protection:
+- Database transactions for order processing
+- Automatic rollback on error (no partial orders)
+- Timestamps for audit trail
+- Transaction logging (loyalty_transactions table)
+
+Producer Status Control:
+- Producers start as "inactive" (need approval)
+- Admin can suspend producers
+- Suspended producers cannot login
+- Status checked during login attempt
+
+Row-Level Security:
+- Producers see only their own products
+- WHERE producer_id = $current_producer_id in queries
+- Orders filtered by producer's products
+- Prevents data leakage across producers
+
+
+8. DATA FLOW EXAMPLES
+================================================================================
+
+User Registration Flow:
+-----------------------
+1. Customer visits register.php
+2. User selects "Customer" tab
+3. Fills form: Name, Email, Password, Confirm
+4. Form submitted via POST
+
+Backend Processing:
+- Validate all fields filled
+- Validate email format
+- Validate password length (>= 6)
+- Validate passwords match
+- Hash password: password_hash($password, PASSWORD_BCRYPT)
+- Check for duplicate email (try INSERT)
+- On success:
+  * INSERT INTO users (full_name, email, password)
+  * Display success message
+  * Link to login.php
+- On error:
+  * Display error message
+  * Keep form data
+
+Producer Registration Flow:
+----------------------------
+1. User visits register.php
+2. User selects "Producer" tab
+3. Fills form: Name, Email, Company, Password
+4. Form submitted via POST
+
+Backend Processing:
+- Same validation as customer
+- Additional: Require company_name
+- Hash password
+- Check for duplicate email
+- INSERT INTO producers (full_name, email, password, company_name, status='inactive')
+- Display message: "Awaiting admin approval"
+- Redirect to login after admin approves
+
+Checkout Flow:
+--------------
+1. Customer adds items to cart (client-side storage)
+2. Customer clicks "Proceed to Checkout"
+3. JavaScript fetches product list from localStorage
+4. JavaScript sends JSON POST to api/checkout.php
+5. curl -X POST http://localhost/api/checkout.php \
+      -H "Content-Type: application/json" \
+      -d '{"cart": [{"id": 1, "quantity": 1}]}'
+
+Backend Processing (api/checkout.php):
+- Receive JSON data
+- Decode: $data = json_decode(file_get_contents("php://input"), true)
+- Validate cart not empty
+- Validate each item has id and quantity
+- START TRANSACTION
+- INSERT INTO orders (created_at VALUES NOW())
+- Get order_id: $order_id = $conn->insert_id
+- PREPARE: "INSERT INTO order_items (order_id, product_id, quantity) VALUES (?, ?, ?)"
+- FOR EACH item in cart:
+  * Bind parameters: $stmt->bind_param("iii", $order_id, $product_id, $quantity)
+  * Execute: $stmt->execute()
+- COMMIT TRANSACTION
+- Return JSON: {"success": true, "order_id": 42}
+
+Client Response (js/cart.js):
+- Clear cart from localStorage: localStorage.removeItem(CART_STORAGE_KEY)
+- Display success message
+- Redirect to order confirmation
+
+Login Flow:
+-----------
+1. User visits auth/login.php
+2. User selects user type (Customer/Producer/Admin)
+3. Enters email and password
+4. Form submitted via POST
+
+Backend Processing:
+- Validate fields not empty
+- Based on user_type:
+  Customer:
+    PREPARE: "SELECT id, full_name, email, password FROM users WHERE email = ?"
+    BIND: email parameter
+    EXECUTE query
+    IF result found:
+      VERIFY password: password_verify($password, $user['password'])
+      IF valid:
+        Create session: loginCustomer($id, $email)
+        REDIRECT to dashboards/dashboard.php
+      ELSE:
+        Display: "Invalid email or password"
+    ELSE:
+      Display: "Invalid email or password"
+  
+  Producer:
+    PREPARE: "SELECT ... FROM producers WHERE email = ?"
+    (same as customer, plus CHECK status == 'active')
+    IF status != 'active':
+      Display: "Your account has been [status] by an administrator"
+    ELSE:
+      loginProducer($id, $email, $company_name)
+      REDIRECT
+  
+  Admin:
+    PREPARE: "SELECT ... FROM admins WHERE email = ?"
+    (same verification as customer)
+    loginAdmin($id, $email)
+    REDIRECT
+
+Dashboard Routing:
+- dashboard.php checks getUserType()
+- Routes to appropriate dashboard:
+  * customer -> customer_dashboard.php
+  * producer -> producer_dashboard.php
+  * admin -> admin_dashboard.php
+
+Product Edit Flow (Producer):
+------------------------------
+1. Producer visits producer_dashboard.php
+2. Clicks "Edit" on product
+3. Modal dialog opens with product details
+4. Producer edits: name, price, stock
+5. Clicks "Save Changes"
+6. Form submitted via POST with action='update_product'
+
+Backend Processing:
+- Check REQUEST_METHOD == 'POST'
+- Check action == 'update_product'
+- Get parameters: product_id, name, price, stock
+- Validate owner: WHERE id = ? AND producer_id = ?
+- PREPARE: "UPDATE products SET name = ?, price = ?, stock = ? WHERE id = ? AND producer_id = ?"
+- BIND: (s = string, d = double, i = integer)
+  $stmt->bind_param("sdiii", $name, $price, $stock, $productId, $producerId)
+- EXECUTE
+- Display success/error message
+- Stay on same page showing updated info
+
+Admin Producer Approval Flow:
+------------------------------
+1. Admin visits admin_dashboard.php
+2. Sees producer card with status = 'inactive'
+3. Clicks "Approve" button
+4. Form submitted via POST with action='update_status'
+
+Backend Processing:
+- Check REQUEST_METHOD == 'POST'
+- Check action == 'update_status'
+- Get: producer_id, new_status
+- Validate status in array ['active', 'inactive', 'suspended']
+- PREPARE: "UPDATE producers SET status = ? WHERE id = ?"
+- BIND: status (string), producer_id (integer)
+- EXECUTE
+- Display success message
+- Page shows updated status
+
+Now producer can login!
+
+
+9. CONFIGURATION
+================================================================================
+
+Database Configuration (db_config.php):
+---------------------------------------
+define('DB_HOST', 'localhost');      // MySQL host
+define('DB_USER', 'root');           // MySQL username
+define('DB_PASS', '');               // MySQL password (empty for local)
+define('DB_NAME', 'ordering_system'); // Database name
+
+Connection:
+$conn = new mysqli(DB_HOST, DB_USER, DB_PASS);
+  - Creates connection without database selected
+  - Auto-creates database if missing
+  - Validates required tables exist
+  - Redirects to db_init.php if incomplete
+
+Character Set:
+$conn->set_charset("utf8mb4");
+  - Full UTF-8 support for international characters
+
+Session Configuration (auth/session.php):
+------------------------------------------
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+  - Starts session if not already started
+  - Prevents errors from multiple start calls
+
+Checkout API Configuration (api/checkout.php):
+-----------------------------------------------
+header('Content-Type: application/json');
+  - Returns JSON responses
+error_reporting(E_ALL);
+ini_set('display_errors', 0);
+  - Captures errors but doesn't display to client
+  - Logs to server error log
+
+Loyalty Points Configuration (customer_dashboard.php):
+-------------------------------------------------------
+$pointsForReward = 1000;
+  - Points required for one reward
+  - Can be modified to change reward frequency
+  - 1 point per dollar spent
+
+Password Configuration (auth/register.php):
+--------------------------------------------
+if (strlen($password) < 6) {
+    $error = 'Password must be at least 6 characters';
+}
+  - Minimum 6 characters required
+  - Customize this number as needed
+
+Tax Configuration (js/cart.js):
+--------------------------------
+const tax = subtotal * 0.10; // 10% tax
+  - Orders calculated with 10% tax
+  - Customizable in calculation function
+
+
+KEY SECURITY BEST PRACTICES IMPLEMENTED
+================================================================================
+
+1. Password Security
+   - BCrypt hashing (password_hash with PASSWORD_BCRYPT)
+   - Never stored in plain text
+   - Strong verification with password_verify()
+
+2. SQL Injection Prevention
+   - All queries use prepared statements
+   - Parameters bound with appropriate types ("i", "s", "d")
+   - Never concatenate user input into queries
+
+3. Session Security
+   - Session IDs generated by PHP
+   - Session data stored server-side
+   - Session variables validated before use
+   - Session destroyed on logout
+
+4. CSRF Protection (Can be added)
+   - Token-based validation
+   - Regenerate session ID after login
+
+5. Data Validation
+   - Email format validation
+   - Number type validation and casting
+   - Required field checking
+   - Enum validation for status values
+
+6. Access Control
+   - Role-based authorization checks
+   - Automatic redirect to login
+   - Row-level security (producers see only own data)
+   - Admin-only functions protected
+
+7. Data Integrity
+   - Foreign key constraints
+   - UNIQUE constraints on emails
+   - Database transactions for multi-step operations
+   - Automatic rollback on error
+
+8. Error Handling
+   - Try-catch blocks for exceptions
+   - Generic error messages to users
+   - Detailed errors in logs (not displayed)
+   - Validation before database operations
+
+
+================================================================================
+                              END OF DOCUMENTATION
+                                 April 22, 2026
+================================================================================

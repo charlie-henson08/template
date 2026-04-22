@@ -37,6 +37,15 @@ include 'auth/session.php';
         <main>
             <h2>Shopping Cart</h2>
             
+            <?php if (!isCustomer()): ?>
+                <div style="background-color: #fff3cd; border: 1px solid #ffc107; padding: 20px; border-radius: 8px; margin-bottom: 30px;">
+                    <h3 style="color: #856404; margin-top: 0;">Login Required</h3>
+                    <p style="color: #856404; margin-bottom: 15px;">You must be logged in to checkout. Please login or create an account to proceed with your order.</p>
+                    <a href="auth/login.php" style="display: inline-block; padding: 10px 20px; background-color: #007bff; color: white; text-decoration: none; border-radius: 4px; margin-right: 10px;">Login</a>
+                    <a href="auth/register.php" style="display: inline-block; padding: 10px 20px; background-color: #28a745; color: white; text-decoration: none; border-radius: 4px;">Register</a>
+                </div>
+            <?php endif; ?>
+            
             <div id="cart-container">
                 <p class="empty-cart">Your cart is empty. <a href="index.php">Continue shopping</a></p>
             </div>
@@ -47,7 +56,26 @@ include 'auth/session.php';
                     <p><strong>Tax (10%):</strong> $<span id="tax">0.00</span></p>
                     <p class="total"><strong>Total:</strong> $<span id="total">0.00</span></p>
                 </div>
-                <button id="checkout-btn" class="btn btn-success">Proceed to Checkout</button>
+
+                <div class="address-form">
+                    <h3>Delivery Address</h3>
+                    <div class="form-group">
+                        <label for="address">Street Address *</label>
+                        <input type="text" id="address" name="address" placeholder="e.g., 123 Main Street" required>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="postcode">Postcode *</label>
+                            <input type="text" id="postcode" name="postcode" placeholder="e.g., 12345" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="city">City *</label>
+                            <input type="text" id="city" name="city" placeholder="e.g., New York" required>
+                        </div>
+                    </div>
+                </div>
+                
+                <button id="checkout-btn" class="btn btn-success">Place Order</button>
                 <button id="clear-cart-btn" class="btn btn-secondary">Clear Cart</button>
             </div>
 

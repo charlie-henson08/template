@@ -2,12 +2,18 @@
 header('Content-Type: application/json');
 
 include '../db_config.php';
+include '../auth/session.php';
 
 // Enable error reporting for debugging
 error_reporting(E_ALL);
 ini_set('display_errors', 0);
 
 try {
+    // Check if user is logged in
+    if (!isCustomer()) {
+        throw new Exception('You must be logged in to place an order');
+    }
+
     // Get POST data
     $data = json_decode(file_get_contents("php://input"), true);
 
@@ -17,6 +23,20 @@ try {
     }
 
     $cart = $data['cart'];
+
+    // Validate address data
+    if (empty($data['address']) || empty($data['postcode']) || empty($data['city'])) {
+        throw new Exception('Please provide complete address information (address, postcode, city)');
+    }
+
+    $address = trim($data['address']);
+    $postcode = trim($data['postcode']);
+    $city = trim($data['city']);
+
+    // Validate address fields not too long
+    if (strlen($address) > 255 || strlen($postcode) > 20 || strlen($city) > 100) {
+        throw new Exception('Address fields are too long');
+    }
 
     // Validate cart items
     foreach ($cart as $item) {
@@ -28,13 +48,19 @@ try {
     // Start transaction
     $conn->begin_transaction();
 
-    // Create new order
-    $sql = "INSERT INTO orders (created_at) VALUES (NOW())";
-    if (!$conn->query($sql)) {
-        throw new Exception('Error creating order: ' . $conn->error);
+    // Create new order with address information
+    $userId = $_SESSION['user_id'];
+    $sql = "INSERT INTO orders (user_id, address, postcode, city, created_at) VALUES (?, ?, ?, ?, NOW())";
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        throw new Exception('Error preparing order statement: ' . $conn->error);
     }
-
-    $order_id = $conn->insert_id;
+    $stmt->bind_param("isss", $userId, $address, $postcode, $city);
+    if (!$stmt->execute()) {
+        throw new Exception('Error creating order: ' . $stmt->error);
+    }
+    $order_id = $stmt->insert_id;
+    $stmt->close();
 
     // Insert order items
     $stmt = $conn->prepare("INSERT INTO order_items (order_id, product_id, quantity) VALUES (?, ?, ?)");
